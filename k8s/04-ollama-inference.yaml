@@ -1,0 +1,80 @@
+# Persistent Volume Claim for caching model weights (prevents cold starts on pod restart)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ollama-models-pvc
+  namespace: ai-inference
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 15Gi
+---
+# Day-1 / Local & CPU-Friendly Inference & Embedding Engine:
+# Serves both:
+#   1. nomic-embed-text (274MB, 768-dim real semantic embeddings via /api/embed)
+#   2. gemma4:e2b (Open-weights reasoning & tool-calling LLM via /api/chat)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ollama
+  namespace: ai-inference
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ollama
+  template:
+    metadata:
+      labels:
+        app: ollama
+    spec:
+      containers:
+        - name: ollama
+          image: ollama/ollama:latest
+          ports:
+            - containerPort: 11434
+              name: http
+          env:
+            - name: OLLAMA_NUM_PARALLEL
+              value: "1"
+            - name: OLLAMA_KEEP_ALIVE
+              value: "24h"
+            - name: OLLAMA_CONTEXT_LENGTH
+              value: "8192"
+          lifecycle:
+            postStart:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - "sleep 5 && ollama pull nomic-embed-text && ollama pull gemma4:e2b"
+          resources:
+            requests:
+              cpu: "1500m"
+              memory: "4Gi"
+            limits:
+              memory: "8Gi"
+          volumeMounts:
+            - name: ollama-storage
+              mountPath: /root/.ollama
+      volumes:
+        - name: ollama-storage
+          persistentVolumeClaim:
+            claimName: ollama-models-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama
+  namespace: ai-inference
+spec:
+  selector:
+    app: ollama
+  ports:
+    - protocol: TCP
+      port: 11434
+      targetPort: 11434
+      name: http
+  type: ClusterIP

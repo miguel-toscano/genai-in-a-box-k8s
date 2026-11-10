@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# "GenAI in a Box" — Declarative Self-Service Stack
+# Note: 04-vllm-gpu-inference.yaml is included in this folder as the Day-2 GPU production
+# alternative; by default we deploy 04-ollama-inference.yaml for CPU-only clusters.
+resources:
+  - 00-namespaces.yaml
+  - 01-network-policies.yaml
+  - 01-resource-quotas.yaml
+  - 02-postgres-cnpg-cluster.yaml
+  - 03-data-hydration-job.yaml
+  - 04-ollama-inference.yaml
+  - 05-mcp-toolbox.yaml
+  - 06-adk-agent.yaml

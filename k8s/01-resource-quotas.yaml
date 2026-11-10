@@ -1,0 +1,75 @@
+# Predictable FinOps Guardrail (T-Shirt Size: "small-cpu" = ~€140/mo flat, €0.00/token)
+# Enforces hard Kubernetes CPU, Memory, and Storage ceilings across all 4 namespaces
+# of the "GenAI Box" so runaway autonomous agent loops can NEVER cause surprise bills.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: default-container-limits
+  namespace: data
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "500m"
+        memory: "512Mi"
+      defaultRequest:
+        cpu: "100m"
+        memory: "128Mi"
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: genai-box-data-quota
+  namespace: data
+  labels:
+    genai-box/t-shirt-size: small-cpu
+    genai-box/monthly-cost-eur: "140"
+spec:
+  hard:
+    requests.cpu: "2"
+    requests.memory: 4Gi
+    requests.storage: 20Gi
+    pods: "10"
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: genai-box-inference-quota
+  namespace: ai-inference
+  labels:
+    genai-box/t-shirt-size: small-cpu
+    genai-box/monthly-cost-eur: "140"
+spec:
+  hard:
+    requests.cpu: "4"
+    requests.memory: 8Gi
+    requests.storage: 20Gi
+    pods: "5"
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: genai-box-mcp-quota
+  namespace: mcp-server
+  labels:
+    genai-box/t-shirt-size: small-cpu
+    genai-box/monthly-cost-eur: "140"
+spec:
+  hard:
+    requests.cpu: "1"
+    requests.memory: 1Gi
+    pods: "5"
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: genai-box-agent-quota
+  namespace: agent
+  labels:
+    genai-box/t-shirt-size: small-cpu
+    genai-box/monthly-cost-eur: "140"
+spec:
+  hard:
+    requests.cpu: "1"
+    requests.memory: 2Gi
+    pods: "5"

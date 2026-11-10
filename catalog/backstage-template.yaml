@@ -1,0 +1,71 @@
+# Backstage / Internal Developer Portal (IDP) Software Template
+# Published by Platform Engineering so Business Units can request a governed,
+# cost-capped "Sovereign GenAI in a Box" without writing Kubernetes YAML.
+apiVersion: scaffolder.backstage.io/v1beta3
+kind: Template
+metadata:
+  name: sovereign-genai-in-a-box
+  title: "Sovereign GenAI in a Box (Kubernetes + PG18 pgvector + MCP)"
+  description: >
+    Self-service, air-gapped AI Agent platform with built-in Corporate Data Security
+    (Zero-Trust NetworkPolicy + MCP Gateway), Database HA (CloudNativePG PostgreSQL 18 + pgvector),
+    and Predictable FinOps (T-Shirt Sized Kubernetes ResourceQuotas — €0.00/token).
+  tags:
+    - genai
+    - kubernetes
+    - postgresql-18
+    - pgvector
+    - mcp
+    - sovereign-ai
+spec:
+  owner: group:platform-engineering
+  type: service-enclave
+  parameters:
+    - title: "1. Business Intent & Data Sensitivity"
+      required:
+        - businessUnit
+        - workloadIntent
+        - dataClassification
+      properties:
+        businessUnit:
+          title: Business Unit / Team
+          type: string
+          default: healthcare-clinical-research
+        workloadIntent:
+          title: What do you want your AI Agent to do?
+          type: string
+          default: "Connect an LLM agent to structured patient records and match free-text clinical trials."
+        dataClassification:
+          title: Corporate Data Classification
+          type: string
+          enum:
+            - restricted-phi-gdpr
+            - confidential-internal
+          default: restricted-phi-gdpr
+    - title: "2. Predictable FinOps T-Shirt Size (ResourceQuota)"
+      required:
+        - tShirtSize
+      properties:
+        tShirtSize:
+          title: Infrastructure Capacity Tier (Flat Monthly Budget — €0.00/token)
+          type: string
+          enum:
+            - small-cpu
+            - prod-gpu
+          enumNames:
+            - "Small CPU Sandbox (8 vCPU, 15Gi RAM, Ollama + Gemma 4) — €140/month flat"
+            - "Production GPU Scale (16 vCPU, 32Gi RAM, 1x L4 GPU, vLLM + KEDA) — €650/month flat"
+          default: small-cpu
+  steps:
+    - id: generate-gitops-claim
+      name: Generate Declarative GenAIBoxClaim & Kustomize Overlay
+      action: fetch:template
+      input:
+        url: ./requests
+    - id: create-gitops-pr
+      name: Open Pull Request to trigger CI/CD Policy Gate & ArgoCD Sync
+      action: publish:github:pull-request
+      input:
+        repoUrl: github.com?owner=miguel-toscano&repo=genai-in-a-box-k8s
+        branchName: provision-${{ parameters.businessUnit }}
+        title: "feat(catalog): Provision Sovereign GenAI Box for ${{ parameters.businessUnit }}"

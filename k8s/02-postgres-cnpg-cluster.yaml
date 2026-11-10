@@ -1,0 +1,66 @@
+# LOCAL DEMO CREDENTIALS ONLY — In production, inject via External Secrets Operator (Vault / Secret Manager) or CNPG mTLS.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: pg-app-credentials
+  namespace: data
+type: Opaque
+stringData:
+  username: app
+  password: sovereign-pg-password
+---
+# CloudNativePG (CNPG) Declarative PostgreSQL 18 + pgvector Cluster
+# Demonstrates SRE Day-2 Best Practices for Vector Workloads in Kubernetes:
+#   1. PostgreSQL 18 (`18-standard` includes pgvector) with new PG18 Asynchronous I/O (`io_method: worker`).
+#   2. 2 Instances: 1 Primary (pg-sovereign-rw) + 1 Dedicated Read Replica (pg-sovereign-ro)
+#      so CPU-intensive pgvector similarity searches never starve OLTP writes.
+#   3. Guaranteed QoS (requests == limits) to protect Postgres from the Linux OOMKiller
+#      when HNSW vector graphs reside in memory.
+#   4. Separated Persistent Volumes for WAL vs. Data/Vector Indexes.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: pg-sovereign
+  namespace: data
+spec:
+  instances: 2
+  # In CNPG for PostgreSQL 18, the '-standard-trixie' image variant bundles pgvector out-of-the-box
+  imageName: ghcr.io/cloudnative-pg/postgresql:18-standard-trixie
+
+  postgresql:
+    parameters:
+      shared_buffers: "256MB"
+      maintenance_work_mem: "128MB"     # Tuned for fast HNSW vector index builds
+      work_mem: "16MB"
+      effective_cache_size: "768MB"
+      io_method: "worker"               # New in PostgreSQL 18: Native Asynchronous I/O (AIO)
+      effective_io_concurrency: "16"
+      max_connections: "100"
+
+  bootstrap:
+    initdb:
+      database: healthcaredb
+      owner: app
+      secret:
+        name: pg-app-credentials
+      postInitApplicationSQL:
+        - CREATE EXTENSION IF NOT EXISTS vector;
+
+  # Guaranteed QoS class (requests == limits) prevents unexpected K8s OOMKills
+  # Sized to fit cleanly inside a local Podman + Kind cluster on a laptop as well as GKE
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "500m"
+      memory: "1Gi"
+
+  # Separate persistent storage for Data/HNSW indexes vs. Write-Ahead Log (WAL)
+  storage:
+    size: 5Gi
+  walStorage:
+    size: 2Gi
+
+  monitoring:
+    enablePodMonitor: false

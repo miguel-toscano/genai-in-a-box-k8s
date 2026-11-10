@@ -1,0 +1,162 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mcp-tools-config
+  namespace: mcp-server
+data:
+  tools.yaml: |
+    sources:
+      # Routed to CloudNativePG Read-Only Replica Service (-ro) so vector similarity
+      # bursts never contend with primary OLTP writes!
+      healthcare-db:
+        kind: postgres
+        host: pg-sovereign-ro.data.svc.cluster.local
+        port: 5432
+        database: healthcaredb
+        user: app
+        # LOCAL DEMO CREDENTIALS ONLY — In production, inject from Vault / Secret Manager or Workload Identity.
+        password: sovereign-pg-password
+
+    tools:
+      get_patient_profile:
+        kind: postgres-sql
+        source: healthcare-db
+        description: Retrieves demographic details and clinical profile summary of a patient by their patient_id (e.g. P0001).
+        parameters:
+          - name: patient_id
+            type: string
+            description: The unique ID of the patient (e.g., P0001).
+        statement: |
+          SELECT patient_id, name, age, gender, zip_code, description
+          FROM patients
+          WHERE patient_id = $1;
+
+      get_patient_conditions:
+        kind: postgres-sql
+        source: healthcare-db
+        description: Retrieves all medical diagnoses and conditions for a specific patient_id.
+        parameters:
+          - name: patient_id
+            type: string
+            description: The unique ID of the patient (e.g., P0001).
+        statement: |
+          SELECT diagnosis_id, condition, date, description
+          FROM diagnoses
+          WHERE patient_id = $1
+          ORDER BY date DESC;
+
+      get_patient_treatments:
+        kind: postgres-sql
+        source: healthcare-db
+        description: Retrieves current prescribed medications and dosages for a specific patient_id.
+        parameters:
+          - name: patient_id
+            type: string
+            description: The unique ID of the patient (e.g., P0001).
+        statement: |
+          SELECT medication_id, medication, dosage, description
+          FROM medications
+          WHERE patient_id = $1;
+
+      search_patients_by_condition:
+        kind: postgres-sql
+        source: healthcare-db
+        description: Finds patients who have been diagnosed with a specific condition (e.g. Diabetes, Asthma, Hypertension).
+        parameters:
+          - name: condition_keyword
+            type: string
+            description: The medical condition keyword to search for (e.g., Diabetes, Asthma).
+        statement: |
+          SELECT p.patient_id, p.name, p.age, p.gender, d.condition, d.date
+          FROM patients p
+          JOIN diagnoses d ON p.patient_id = d.patient_id
+          WHERE d.condition ILIKE '%' || $1 || '%'
+          ORDER BY p.age ASC
+          LIMIT 10;
+
+      match_clinical_trials_for_patient:
+        kind: postgres-sql
+        source: healthcare-db
+        description: Performs a hybrid relational + pgvector HNSW cosine similarity search (<=>) to match a patient_id against eligible clinical trials based on age criteria and clinical profile embeddings.
+        parameters:
+          - name: patient_id
+            type: string
+            description: The unique ID of the patient to match against clinical trials (e.g., P0001).
+        statement: |
+          SELECT
+            t.trial_id,
+            t.title,
+            t.target_condition,
+            t.phase,
+            t.max_age,
+            t.eligibility_criteria,
+            ROUND((1 - (t.trial_embedding <=> p.profile_embedding))::numeric, 4) AS vector_similarity_score
+          FROM clinical_trials t
+          JOIN patients p ON p.patient_id = $1
+          WHERE p.age <= t.max_age
+          ORDER BY t.trial_embedding <=> p.profile_embedding
+          LIMIT 3;
+
+    toolsets:
+      healthcare-toolset:
+        - get_patient_profile
+        - get_patient_conditions
+        - get_patient_treatments
+        - search_patients_by_condition
+        - match_clinical_trials_for_patient
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-toolbox
+  namespace: mcp-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mcp-toolbox
+  template:
+    metadata:
+      labels:
+        app: mcp-toolbox
+    spec:
+      containers:
+        - name: mcp-toolbox
+          image: us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:latest
+          args:
+            - "--tools-file=/etc/mcp-toolbox/tools.yaml"
+            - "--address=0.0.0.0"
+            - "--port=5000"
+          ports:
+            - containerPort: 5000
+              name: http
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          volumeMounts:
+            - name: config-volume
+              mountPath: /etc/mcp-toolbox
+              readOnly: true
+      volumes:
+        - name: config-volume
+          configMap:
+            name: mcp-tools-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-toolbox
+  namespace: mcp-server
+spec:
+  selector:
+    app: mcp-toolbox
+  ports:
+    - protocol: TCP
+      port: 5000
+      targetPort: 5000
+      name: http
+  type: ClusterIP

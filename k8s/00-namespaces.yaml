@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: data
+  labels:
+    app.kubernetes.io/part-of: genai-in-a-box
+    tier: stateful-database
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ai-inference
+  labels:
+    app.kubernetes.io/part-of: genai-in-a-box
+    tier: stateless-llm
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mcp-server
+  labels:
+    app.kubernetes.io/part-of: genai-in-a-box
+    tier: security-gateway
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agent
+  labels:
+    app.kubernetes.io/part-of: genai-in-a-box
+    tier: orchestrator

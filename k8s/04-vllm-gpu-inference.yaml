@@ -1,0 +1,80 @@
+# Day-2 Enterprise GPU Production Alternative: vLLM + KEDA Autoscaling
+# ---------------------------------------------------------------------------
+# Why this exists alongside 04-ollama-inference.yaml:
+#   - Ollama (llama.cpp) is ideal for CPU sandboxes and workshops, but queues
+#     requests sequentially under heavy multi-agent concurrency.
+#   - In production with L4/A100 GPUs, swap 04-ollama-inference.yaml for this
+#     vLLM manifest. Because both expose an OpenAI-compatible /v1 API, zero code
+#     changes are required in the ADK Agent or MCP Toolbox!
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-gemma4
+  namespace: ai-inference
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vllm-gemma4
+  template:
+    metadata:
+      labels:
+        app: vllm-gemma4
+    spec:
+      containers:
+        - name: vllm
+          image: vllm/vllm-openai:latest
+          args:
+            - "--model=/models/gemma-4-12b-it"
+            - "--served-model-name=gemma4:e2b"
+            - "--max-model-len=32768"
+            - "--gpu-memory-utilization=0.90"
+            - "--enable-auto-tool-choice"
+            - "--tool-call-parser=pythonic"
+            - "--port=11434"
+          ports:
+            - containerPort: 11434
+              name: http
+          resources:
+            requests:
+              cpu: "4"
+              memory: "16Gi"
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "8"
+              memory: "24Gi"
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            - name: model-weights
+              mountPath: /models
+              readOnly: true
+            - name: dshm
+              mountPath: /dev/shm
+      volumes:
+        - name: model-weights
+          persistentVolumeClaim:
+            claimName: ollama-models-pvc
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi
+---
+# Standard CPU HPA fails for GPU LLMs (VRAM stays flat).
+# KEDA scales vLLM replicas based on the actual waiting request queue depth!
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: vllm-queue-scaler
+  namespace: ai-inference
+spec:
+  scaleTargetRef:
+    name: vllm-gemma4
+  minReplicaCount: 1
+  maxReplicaCount: 4
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus.monitoring.svc:9090
+        metricName: vllm:num_requests_waiting
+        threshold: "5"
+        query: sum(vllm:num_requests_waiting{namespace="ai-inference"})

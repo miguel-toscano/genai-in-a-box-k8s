@@ -1,0 +1,40 @@
+# Zero-Trust Database Perimeter:
+# The ADK Agent (namespace: agent) and LLM (namespace: ai-inference) are strictly
+# blocked from connecting directly to PostgreSQL. ONLY the governed MCP Toolbox
+# (namespace: mcp-server) and intra-namespace CNPG/loader pods can reach port 5432.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-zero-trust-ingress
+  namespace: data
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    # 1. Allow MCP Toolbox in namespace: mcp-server to query PostgreSQL
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: mcp-server
+          podSelector:
+            matchLabels:
+              app: mcp-toolbox
+      ports:
+        - protocol: TCP
+          port: 5432
+    # 2. Allow CloudNativePG operator (cnpg-system) and intra-namespace replication/jobs
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: data
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: cnpg-system
+      ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 8000
+        - protocol: TCP
+          port: 9187

@@ -1,0 +1,145 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: data-loader
+  namespace: data
+spec:
+  backoffLimit: 6
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: loader
+          image: pgvector/pgvector:pg18
+          env:
+            - name: PGHOST
+              value: "pg-sovereign-rw.data.svc.cluster.local"
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: pg-app-credentials
+                  key: username
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: pg-app-credentials
+                  key: password
+            - name: PGDATABASE
+              value: "healthcaredb"
+            - name: OLLAMA_HOST
+              value: "http://ollama.ai-inference.svc.cluster.local:11434"
+            - name: EMBED_MODEL
+              value: "nomic-embed-text"
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              apt-get update && apt-get install -y --no-install-recommends curl jq && rm -rf /var/lib/apt/lists/*
+
+              echo "1. Waiting for PostgreSQL 18 primary ($PGHOST) to be ready..."
+              until pg_isready -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE"; do
+                sleep 5
+              done
+
+              echo "2. Waiting for in-cluster Ollama ($OLLAMA_HOST) embedding model '$EMBED_MODEL'..."
+              until curl -sf "$OLLAMA_HOST/api/tags" | jq -e ".models[] | select(.name | startswith(\"$EMBED_MODEL\"))" > /dev/null; do
+                echo "   Waiting for Ollama to finish pulling $EMBED_MODEL..."
+                sleep 5
+              done
+
+              echo "3. Creating PostgreSQL 18 relational + pgvector(768) tables..."
+              psql -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE" << 'EOSQL'
+              CREATE EXTENSION IF NOT EXISTS vector;
+
+              DROP TABLE IF EXISTS medications CASCADE;
+              DROP TABLE IF EXISTS diagnoses CASCADE;
+              DROP TABLE IF EXISTS clinical_trials CASCADE;
+              DROP TABLE IF EXISTS patients CASCADE;
+
+              CREATE TABLE patients (
+                  patient_id VARCHAR(50) PRIMARY KEY,
+                  name VARCHAR(100),
+                  age INT,
+                  gender VARCHAR(10),
+                  zip_code VARCHAR(10),
+                  description TEXT,
+                  profile_embedding vector(768)
+              );
+
+              CREATE TABLE diagnoses (
+                  diagnosis_id VARCHAR(50) PRIMARY KEY,
+                  patient_id VARCHAR(50) REFERENCES patients(patient_id),
+                  condition VARCHAR(100),
+                  date DATE,
+                  description TEXT
+              );
+
+              CREATE TABLE medications (
+                  medication_id VARCHAR(50) PRIMARY KEY,
+                  patient_id VARCHAR(50) REFERENCES patients(patient_id),
+                  medication VARCHAR(100),
+                  dosage VARCHAR(50),
+                  description TEXT
+              );
+
+              CREATE TABLE clinical_trials (
+                  trial_id VARCHAR(50) PRIMARY KEY,
+                  title VARCHAR(200),
+                  target_condition VARCHAR(100),
+                  max_age INT,
+                  phase VARCHAR(20),
+                  eligibility_criteria TEXT,
+                  trial_embedding vector(768)
+              );
+              EOSQL
+
+              echo "4. Loading CSV records into PostgreSQL 18..."
+              psql -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE" -c "\copy patients(patient_id,name,age,gender,zip_code,description) FROM '/data/patients.csv' WITH CSV HEADER;"
+              psql -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE" -c "\copy diagnoses FROM '/data/diagnoses.csv' WITH CSV HEADER;"
+              psql -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE" -c "\copy medications FROM '/data/medications.csv' WITH CSV HEADER;"
+              psql -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE" -c "\copy clinical_trials(trial_id,title,target_condition,max_age,phase,eligibility_criteria) FROM '/data/clinical_trials.csv' WITH CSV HEADER;"
+
+              echo "5. Computing real 768-dim semantic embeddings locally via Ollama ($EMBED_MODEL)..."
+              # Embed clinical trials
+              psql -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE" -t -A -F $'\t' \
+                -c "SELECT trial_id, title || ' - ' || target_condition || ': ' || eligibility_criteria FROM clinical_trials;" \
+              | while IFS=$'\t' read -r tid ttext; do
+                  [ -z "$tid" ] && continue
+                  VEC=$(curl -sf "$OLLAMA_HOST/api/embed" \
+                    -d "$(jq -nc --arg m "$EMBED_MODEL" --arg i "$ttext" '{model: $m, input: $i}')" \
+                    | jq -c '.embeddings[0]')
+                  psql -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE" -q \
+                    -c "UPDATE clinical_trials SET trial_embedding = '$VEC'::vector WHERE trial_id = '$tid';"
+                done
+
+              # Embed patient profiles enriched with their diagnoses and medications
+              psql -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE" -t -A -F $'\t' \
+                -c "SELECT p.patient_id, p.description || ' Diagnoses: ' || COALESCE(string_agg(DISTINCT d.description, '; '), '') || ' Medications: ' || COALESCE(string_agg(DISTINCT m.description, '; '), '') FROM patients p LEFT JOIN diagnoses d ON p.patient_id = d.patient_id LEFT JOIN medications m ON p.patient_id = m.patient_id GROUP BY p.patient_id, p.description;" \
+              | while IFS=$'\t' read -r pid ptext; do
+                  [ -z "$pid" ] && continue
+                  VEC=$(curl -sf "$OLLAMA_HOST/api/embed" \
+                    -d "$(jq -nc --arg m "$EMBED_MODEL" --arg i "$ptext" '{model: $m, input: $i}')" \
+                    | jq -c '.embeddings[0]')
+                  psql -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE" -q \
+                    -c "UPDATE patients SET profile_embedding = '$VEC'::vector WHERE patient_id = '$pid';"
+                done
+
+              echo "6. Building pgvector HNSW index (vector_cosine_ops) on PostgreSQL 18..."
+              psql -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE" << 'EOSQL'
+              CREATE INDEX idx_clinical_trials_hnsw
+              ON clinical_trials
+              USING hnsw (trial_embedding vector_cosine_ops)
+              WITH (m = 16, ef_construction = 64);
+
+              ANALYZE;
+              EOSQL
+
+              echo "PostgreSQL 18 + pgvector HNSW hydration complete!"
+          volumeMounts:
+            - name: data-volume
+              mountPath: /data
+      volumes:
+        - name: data-volume
+          configMap:
+            name: clinical-data

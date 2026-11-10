@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clinical-trial-matcher
+  namespace: agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: clinical-trial-matcher
+  template:
+    metadata:
+      labels:
+        app: clinical-trial-matcher
+    spec:
+      containers:
+        - name: agent
+          # Defaults to local image loaded into Kind via Podman; overridden by Makefile for GKE
+          image: localhost/genai-box/agent:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OLLAMA_URL
+              value: "http://ollama.ai-inference.svc.cluster.local:11434"
+            - name: OLLAMA_API_BASE
+              value: "http://ollama.ai-inference.svc.cluster.local:11434"
+            - name: MCP_URL
+              value: "http://mcp-toolbox.mcp-server.svc.cluster.local:5000"
+          ports:
+            - containerPort: 8000
+              name: http
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clinical-trial-matcher
+  namespace: agent
+spec:
+  selector:
+    app: clinical-trial-matcher
+  ports:
+    - protocol: TCP
+      port: 8000
+      targetPort: 8000
+      name: http
+  type: ClusterIP

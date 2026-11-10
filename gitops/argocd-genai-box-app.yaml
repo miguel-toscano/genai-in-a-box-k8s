@@ -1,0 +1,26 @@
+# Pillar 3: "Architecture as a Service" — Self-Service GitOps Blueprint
+# Platform Engineers expose this single declarative ArgoCD Application so any
+# internal product team can spin up an isolated, air-gapped "GenAI Box"
+# (Gemma 4 + MCP Toolbox + CloudNativePG pgvector + NetworkPolicies) in minutes.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: genai-in-a-box-healthcare
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/miguel-toscano/genai-in-a-box-k8s.git
+    targetRevision: main
+    path: k8s
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: default
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
